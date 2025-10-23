@@ -1,0 +1,18 @@
+api_version = "2025-10"
+
+[[extensions]]
+type = "ui_extension"
+name = "PartLookup"
+uid = "2c698fb4-7ae6-4ce0-ef96-459b165dec6b0eac550d"
+handle = "partlookup"
+description = "A preact POS UI extension"
+
+# module: file that contains your extension’s source code
+# target: location where your extension appears in POS
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"
