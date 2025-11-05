@@ -6,7 +6,10 @@ export default async () => {
 };
 
 function Extension() {
-  const [currentPage, setCurrentPage] = useState('search'); // 'search' or 'results'
+  // ============================================================================
+  // STATE MANAGEMENT
+  // ============================================================================
+  const [currentPage, setCurrentPage] = useState('search');
   const [make, setMake] = useState('');
   const [model, setModel] = useState('');
   const [year, setYear] = useState('');
@@ -15,24 +18,130 @@ function Extension() {
   const [errorMessage, setErrorMessage] = useState('');
   const [currentLocationId, setCurrentLocationId] = useState(null);
   const [searchString, setSearchString] = useState('');
+  const [expandedProductId, setExpandedProductId] = useState(null);
 
-  // Get current location ID on mount
+  // ============================================================================
+  // INITIALIZATION
+  // ============================================================================
+  
+  /**
+   * Fetch and store the current POS location ID on component mount
+   * This is required for inventory level queries
+   */
   useEffect(() => {
     const fetchLocationId = async () => {
       try {
         const locationId = shopify.session?.currentSession?.locationId;
         setCurrentLocationId(locationId);
-        console.log('Current Location ID:', locationId);
       } catch (error) {
-        console.error('Error getting location ID:', error);
+        console.error('[Part Lookup] Failed to get location ID:', error.message);
       }
     };
     fetchLocationId();
   }, []);
 
-  // Search for products by car variant
+  // ============================================================================
+  // UTILITY FUNCTIONS
+  // ============================================================================
+  
+  /**
+   * Extract numeric ID from Shopify GID format
+   * @param {string} gid - Shopify Global ID (e.g., "gid://shopify/Product/123")
+   * @param {string} type - Resource type (e.g., "Product", "ProductVariant")
+   * @returns {number} Numeric ID
+   */
+  const extractNumericId = (gid, type) => {
+    return Number(gid.replace(`gid://shopify/${type}/`, ''));
+  };
+
+  /**
+   * Transform raw GraphQL product data into simplified product object
+   * @param {Object} product - Raw product data from GraphQL
+   * @returns {Object} Transformed product with essential fields
+   */
+  const transformProductData = (product) => {
+    const variant = product.variants.nodes[0];
+    const inventoryQuantity = variant?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity;
+
+    return {
+      id: product.id,
+      title: product.title,
+      description: product.description,
+      image: product.featuredImage?.url || variant?.image?.url,
+      variantId: variant?.id,
+      variantTitle: variant?.title,
+      price: variant?.price,
+      inventory: inventoryQuantity ?? null,
+      carVariants: product.compatibleCars.references.nodes.map(n => n.displayName),
+    };
+  };
+
+  // ============================================================================
+  // GRAPHQL QUERY
+  // ============================================================================
+  
+  /**
+   * GraphQL query to fetch products with compatible car metafield data
+   * Retrieves first 250 products with their variants, inventory, and car compatibility
+   */
+  const buildProductSearchQuery = () => `
+    query SearchProductsByCarVariant {
+      products(first: 250) {
+        nodes {
+          id
+          title
+          description
+          featuredImage {
+            url
+          }
+          variants(first: 1) {
+            nodes {
+              id
+              title
+              price
+              image {
+                url
+              }
+              inventoryItem {
+                id
+                inventoryLevel(locationId: "gid://shopify/Location/${currentLocationId}") {
+                  quantities(names: "available") {
+                    quantity
+                  }
+                }
+              }
+            }
+          }
+          compatibleCars: metafield(namespace: "custom", key: "compatible_car") {
+            ... on Metafield {
+              id
+              references(first: 100) {
+                nodes {
+                  ... on Metaobject {
+                    id
+                    handle
+                    displayName
+                    type
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  // ============================================================================
+  // PRODUCT SEARCH
+  // ============================================================================
+  
+  /**
+   * Search for products that match the specified vehicle (make, model, year)
+   * Filters products based on compatible_car metafield matching the search string
+   */
   const searchProducts = async () => {
-    // Validate inputs
+    // Validate required fields
     if (!make.trim() || !model.trim() || !year.trim()) {
       setErrorMessage('Please fill in all fields (Make, Model, Year)');
       return;
@@ -43,204 +152,102 @@ function Extension() {
     setSearchResults([]);
 
     try {
-      // Concatenate into search string (e.g., "Lotus Emira 2024")
       const builtSearchString = `${make.trim()} ${model.trim()} ${year.trim()}`;
       setSearchString(builtSearchString);
-      console.log('=== SEARCH STARTED ===');
-      console.log('Searching for:', builtSearchString);
-
-      // GraphQL query matching the working example
-      const query = `
-        query SearchProductsByCarVariant {
-          products(first: 250) {
-            nodes {
-              id
-              title
-              description
-              featuredImage {
-                url
-              }
-              variants(first: 1) {
-                nodes {
-                  id
-                  title
-                  price
-                  image {
-                    url
-                  }
-                  inventoryItem {
-                    id
-                    inventoryLevel(locationId: "gid://shopify/Location/${currentLocationId}") {
-                      quantities(names: "available") {
-                        quantity
-                      }
-                    }
-                  }
-                }
-              }
-              compatibleCars: metafield(namespace: "custom", key: "compatible_car") {
-                ... on Metafield {
-                  id
-                  references(first: 100) {
-                    nodes {
-                      ... on Metaobject {
-                        id
-                        handle
-                        displayName
-                        type
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `;
+      
+      console.log('[Part Lookup] Searching for:', builtSearchString);
 
       const response = await fetch('shopify:admin/api/graphql.json', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          query,
-        }),
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query: buildProductSearchQuery()}),
       });
 
       const result = await response.json();
-      console.log('GraphQL Response - Total Products:', result.data?.products?.nodes?.length);
 
       if (result.errors) {
-        console.error('GraphQL Errors:', result.errors);
+        console.error('[Part Lookup] GraphQL errors:', result.errors);
         setErrorMessage('Error searching products. Please try again.');
-        setIsSearching(false);
         return;
       }
 
-      // Log first product to see structure
-      if (result.data?.products?.nodes?.length > 0) {
-        const firstProduct = result.data.products.nodes[0];
-        console.log('Sample product structure:', {
-          title: firstProduct.title,
-          id: firstProduct.id,
-          compatibleCars: firstProduct.compatibleCars,
-          hasMetafield: !!firstProduct.compatibleCars
-        });
-      }
+      const products = result.data?.products?.nodes || [];
+      console.log(`[Part Lookup] Retrieved ${products.length} products`);
 
-      // Count products with and without metafields
-      let productsWithMetafield = 0;
-      let productsWithoutMetafield = 0;
-      
-      result.data.products.nodes.forEach(product => {
-        if (product.compatibleCars?.references?.nodes && product.compatibleCars.references.nodes.length > 0) {
-          productsWithMetafield++;
-          console.log('  ✓ Product with metafield:', product.title, '- Car variants:', product.compatibleCars.references.nodes.map(n => n.displayName).join(', '));
-        } else {
-          productsWithoutMetafield++;
-          // Log a few examples of products without metafield
-          if (productsWithoutMetafield <= 3) {
-            console.log('  ✗ Product WITHOUT metafield:', product.title, '- compatibleCars value:', product.compatibleCars);
-          }
-        }
-      });
-
-      console.log('Products WITH compatible_car metafield:', productsWithMetafield);
-      console.log('Products WITHOUT compatible_car metafield:', productsWithoutMetafield);
-
-      // Filter products that have matching car variant displayName
-      const matchingProducts = result.data.products.nodes
+      // Filter products with matching car variant
+      const matchingProducts = products
         .filter(product => {
           const metafield = product.compatibleCars;
-          if (!metafield?.references?.nodes) {
-            return false;
-          }
+          if (!metafield?.references?.nodes) return false;
 
-          // Check if any metaobject displayName matches our search string
-          const hasMatch = metafield.references.nodes.some(node => {
-            const matches = node.displayName?.toLowerCase() === builtSearchString.toLowerCase();
-            if (matches) {
-              console.log('MATCH FOUND:', node.displayName, 'on product:', product.title);
-            }
-            return matches;
-          });
-          
-          return hasMatch;
+          return metafield.references.nodes.some(node =>
+            node.displayName?.toLowerCase() === builtSearchString.toLowerCase()
+          );
         })
-        .map(product => {
-          const variant = product.variants.nodes[0];
-          const inventoryQuantity = variant?.inventoryItem?.inventoryLevel?.quantities?.[0]?.quantity;
+        .map(transformProductData);
 
-          return {
-            id: product.id,
-            title: product.title,
-            description: product.description,
-            image: product.featuredImage?.url || variant?.image?.url,
-            variantId: variant?.id,
-            variantTitle: variant?.title,
-            price: variant?.price,
-            inventory: inventoryQuantity !== undefined ? inventoryQuantity : null,
-            carVariants: product.compatibleCars.references.nodes.map(n => n.displayName),
-          };
-        });
-
-      console.log('Matching Products:', matchingProducts.length);
-      console.log('=== SEARCH COMPLETE ===');
+      console.log(`[Part Lookup] Found ${matchingProducts.length} matching parts`);
 
       setSearchResults(matchingProducts);
-      
-      // Always navigate to results page (it will show "no results" message if empty)
       setCurrentPage('results');
+      
     } catch (error) {
-      console.error('Error searching products:', error);
+      console.error('[Part Lookup] Search failed:', error.message);
       setErrorMessage('An error occurred while searching. Please try again.');
     } finally {
       setIsSearching(false);
     }
   };
 
-  // Add product to cart
+  // ============================================================================
+  // EVENT HANDLERS
+  // ============================================================================
+  
+  /**
+   * Handle form submission for product search
+   */
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    searchProducts();
+  };
+
+  /**
+   * Add a product variant to the current cart
+   * @param {Object} product - Product object with variantId
+   */
   const addToCart = async (product) => {
     try {
-      const variantIdNumber = Number(product.variantId.replace('gid://shopify/ProductVariant/', ''));
-      if (shopify?.cart?.addLineItem) {
-        await shopify.cart.addLineItem(variantIdNumber, 1);
-        if (shopify?.toast?.show) {
-          shopify.toast.show(`Added ${product.title} to cart`);
-        }
-      } else {
-        console.error('Cart API not available');
+      const variantIdNumber = extractNumericId(product.variantId, 'ProductVariant');
+      
+      if (!shopify?.cart?.addLineItem) {
+        throw new Error('Cart API not available');
+      }
+
+      await shopify.cart.addLineItem(variantIdNumber, 1);
+      
+      if (shopify?.toast?.show) {
+        shopify.toast.show(`Added ${product.title} to cart`);
       }
     } catch (error) {
-      console.error('Error adding to cart:', error);
+      console.error('[Part Lookup] Add to cart failed:', error.message);
       if (shopify?.toast?.show) {
         shopify.toast.show(`Failed to add ${product.title} to cart`);
       }
     }
   };
 
-  // View product details
-  const viewProductDetails = (product) => {
-    try {
-      const productIdNumber = Number(product.id.replace('gid://shopify/Product/', ''));
-      if (shopify?.action?.navigate) {
-        shopify.action.navigate(`admin/products/${productIdNumber}`);
-      } else {
-        console.error('Navigate API not available');
-      }
-    } catch (error) {
-      console.error('Error navigating to product:', error);
-    }
+  /**
+   * Toggle expanded view of product details
+   * @param {string} productId - Product ID to expand/collapse
+   */
+  const toggleProductDetails = (productId) => {
+    setExpandedProductId(expandedProductId === productId ? null : productId);
   };
 
-  // Handle form submission
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    searchProducts();
-  };
-
-  // Render search page
+  // ============================================================================
+  // RENDER: SEARCH PAGE
+  // ============================================================================
+  
   if (currentPage === 'search') {
     return (
       <s-page heading='Part Finder'>
@@ -248,7 +255,7 @@ function Extension() {
           <s-box padding="small">
             <s-text>Find parts for your car</s-text>
             
-            {/* Search Form */}
+            {/* Vehicle Search Form */}
             <s-box padding="small">
               <form onSubmit={handleSubmit}>
                 <s-box padding="small">
@@ -279,17 +286,14 @@ function Extension() {
                 </s-box>
 
                 <s-box padding="small">
-                  <s-button
-                    disabled={isSearching}
-                    onClick={handleSubmit}
-                  >
+                  <s-button disabled={isSearching} onClick={handleSubmit}>
                     {isSearching ? 'Searching...' : 'Search Parts'}
                   </s-button>
                 </s-box>
               </form>
             </s-box>
 
-            {/* Error Message */}
+            {/* Error Display */}
             {errorMessage && (
               <s-box padding="small">
                 <s-banner>
@@ -298,8 +302,8 @@ function Extension() {
               </s-box>
             )}
 
-            {/* Initial instructions when no search has been performed */}
-            {!isSearching && searchResults.length === 0 && !errorMessage && (
+            {/* Help Text */}
+            {!isSearching && !searchResults.length && !errorMessage && (
               <s-box padding="small">
                 <s-text>Enter your vehicle information above to find compatible parts.</s-text>
               </s-box>
@@ -310,10 +314,13 @@ function Extension() {
     );
   }
 
-  // Render results page
+  // ============================================================================
+  // RENDER: RESULTS PAGE
+  // ============================================================================
+  
   return (
     <s-page heading={`Parts for ${searchString}`}>
-      {/* Fixed header with back button - stays visible when scrolling */}
+      {/* Header with back button and result count */}
       <s-box padding="base">
         <s-button onClick={() => setCurrentPage('search')}>
           ← Back to Search
@@ -325,50 +332,60 @@ function Extension() {
         )}
       </s-box>
 
-      {/* Scrollable results area */}
+      {/* Results List */}
       <s-scroll-box>
         {searchResults.length > 0 ? (
           <s-stack direction="block" gap="base">
-            {searchResults.map((product) => (
-              <s-box key={product.id} padding="base">
-                {/* Product card using Section for proper grouping */}
-                <s-section>
-                  <s-stack direction="block" gap="small">
-                    {/* Product Title */}
-                    <s-heading>{product.title}</s-heading>
-                    
-                    {/* Price and Stock inline with badges */}
-                    <s-stack direction="inline" gap="small">
-                      <s-text>💰 ${product.price || 'N/A'}</s-text>
-                      {product.inventory !== null && (
-                        <s-badge tone={product.inventory > 0 ? 'success' : 'critical'}>
-                          {product.inventory > 0 ? `${product.inventory} in stock` : 'Out of stock'}
-                        </s-badge>
+            {searchResults.map((product) => {
+              const isExpanded = expandedProductId === product.id;
+              
+              return (
+                <s-box key={product.id} padding="base">
+                  <s-section>
+                    <s-stack direction="block" gap="small">
+                      <s-heading>{product.title}</s-heading>
+                      
+                      {/* Price and Inventory Status */}
+                      <s-stack direction="inline" gap="small">
+                        <s-text>💰 ${product.price || 'N/A'}</s-text>
+                        {product.inventory !== null && (
+                          <s-badge tone={product.inventory > 0 ? 'success' : 'critical'}>
+                            {product.inventory > 0 ? `${product.inventory} in stock` : 'Out of stock'}
+                          </s-badge>
+                        )}
+                      </s-stack>
+                      
+                      {/* Product Image */}
+                      {product.image && (
+                        <s-box inlineSize="200px" minInlineSize="200px">
+                          <s-image src={product.image} />
+                        </s-box>
                       )}
+                      
+                      {/* Product Description (when expanded) */}
+                      {isExpanded && product.description && (
+                        <s-box padding="small">
+                          <s-text>{product.description}</s-text>
+                        </s-box>
+                      )}
+                      
+                      {/* Actions */}
+                      <s-stack direction="inline" gap="small">
+                        <s-button onClick={() => addToCart(product)}>
+                          ➕ Add to Cart
+                        </s-button>
+                        <s-button onClick={() => toggleProductDetails(product.id)}>
+                          {isExpanded ? '▲ Hide Details' : '▼ Show Details'}
+                        </s-button>
+                      </s-stack>
                     </s-stack>
-                    
-                    {/* Product Image */}
-                    {product.image && (
-                      <s-box inlineSize="200px" minInlineSize="200px">
-                        <s-image src={product.image} />
-                      </s-box>
-                    )}
-                    
-                    {/* Action Buttons */}
-                    <s-stack direction="inline" gap="small">
-                      <s-button onClick={() => addToCart(product)}>
-                        ➕ Add to Cart
-                      </s-button>
-                      <s-button onClick={() => viewProductDetails(product)}>
-                        📋 View Details
-                      </s-button>
-                    </s-stack>
-                  </s-stack>
-                </s-section>
-              </s-box>
-            ))}
+                  </s-section>
+                </s-box>
+              );
+            })}
           </s-stack>
         ) : (
+          // No Results Message
           <s-box padding="base">
             <s-banner>
               <s-text>No compatible parts found, sorry</s-text>

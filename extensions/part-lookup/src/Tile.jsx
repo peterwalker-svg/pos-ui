@@ -1,5 +1,9 @@
 import {render} from 'preact';
 
+/**
+ * Part Lookup Tile Component
+ * Displays a clickable tile in the POS UI that opens the Part Finder modal
+ */
 export default async () => {
   render(<Extension />, document.body);
 }
