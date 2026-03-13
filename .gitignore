@@ -1,10 +1,11 @@
 # OS files
 .DS_Store
 
-# Claude Code and MCP config — local only, not for version control
+# AI assistant config — local only, not for version control
 CLAUDE.md
 .mcp.json
 .cursor/
+.gemini/
 
 node_modules
 
