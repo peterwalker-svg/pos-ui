@@ -1,15 +1,18 @@
 # Tunexia POS UI Extensions
 
-A Shopify POS app providing automotive parts lookup and customer purchase history recommendations for Tunexia retail stores.
+A Shopify POS app providing automotive parts lookup, customer purchase history recommendations, and customer outreach tools for Tunexia retail stores.
 
 ## Overview
 
-This app consists of two POS UI extensions that enhance the point-of-sale experience:
+This app consists of three POS UI extensions that enhance the point-of-sale experience:
 
 1. **Part Lookup** - Search for compatible automotive parts by vehicle (make, model, year)
 2. **Purchase History Recommendations** - Show product recommendations based on customer purchase history
+3. **Customer Outreach** *(POC)* - Enable store staff to collect email addresses for customer outreach campaigns
 
-Both extensions appear as tiles on the POS home screen and open modals for interaction.
+All extensions appear as tiles on the POS home screen and open modals for interaction.
+
+> **Note:** This app demonstrates how multiple POS UI extensions can be bundled into a single Shopify app. Other apps in this GitHub repository typically contain only one extension per app for simplicity, but Shopify allows any number of extensions within a single app when they share common functionality or are designed to work together.
 
 ## Tech Stack
 
@@ -33,6 +36,7 @@ Both extensions appear as tiles on the POS home screen and open modals for inter
 ### API Versions
 - **Part Lookup Extension:** `2025-10`
 - **Purchase History Extension:** `unstable`
+- **Customer Outreach Extension:** `2025-10`
 - **Webhook API Version:** `2026-01`
 
 ---
@@ -403,6 +407,138 @@ Uses React hooks:
 
 ---
 
+## Extension 3: Customer Outreach (Proof of Concept)
+
+### Overview
+
+> **⚠️ POC Status:** This extension is a proof of concept exploring what's possible for enabling store staff to reach out to customers directly from POS. It demonstrates the current capabilities and limitations of the POS UI Extensions platform for customer outreach workflows.
+
+Allows store staff to select customers from a segment who have their "primary store" at the current POS location, then collect their email addresses for use in external email campaigns.
+
+**Location:** `extensions/customer-outreach/`
+
+### Features
+
+- Browse and select from all customer segments defined in Shopify Admin
+- Filter customers to those with orders at the current POS location
+- Multi-select customer list with select all/deselect all
+- Editable email address list for manual adjustments
+- French and English localization
+
+### How It Works
+
+```
+┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
+│  Select Segment     │────▶│  Select Customers   │────▶│  Email Addresses    │
+│  (Radio buttons)    │     │  (Checkboxes)       │     │  (Editable list)    │
+└─────────────────────┘     └─────────────────────┘     └─────────────────────┘
+```
+
+1. **Segment Selection:** Staff selects a customer segment from the list
+2. **Customer Filtering:** Extension queries each customer's order history at the current location
+3. **Email Collection:** Selected customer emails are displayed in an editable text area
+
+### GraphQL Queries
+
+#### Query 1: Fetch Customer Segments
+
+```graphql
+query GetSegments {
+  segments(first: 50) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+```
+
+#### Query 2: Fetch Segment Members
+
+```graphql
+query GetSegmentMembers($segmentId: ID!) {
+  customerSegmentMembers(segmentId: $segmentId, first: 100) {
+    edges {
+      node {
+        id
+        displayName
+        defaultEmailAddress {
+          emailAddress
+        }
+        numberOfOrders
+      }
+    }
+  }
+}
+```
+
+#### Query 3: Count Orders at Location
+
+```graphql
+query GetOrdersAtLocation($query: String!) {
+  ordersCount(query: $query) {
+    count
+  }
+}
+```
+
+The `query` parameter uses format: `customer_id:123 location_id:456`
+
+### Limitations & Workarounds
+
+This POC encountered several platform limitations:
+
+| Feature | Limitation | Workaround |
+|---------|------------|------------|
+| **Email sending** | No Shopify Email API for custom marketing emails | Display emails for manual copy |
+| **mailto: links** | `window.open('mailto:...')` blocked by POS sandbox | Text area with manual selection |
+| **Clipboard API** | `navigator.clipboard.writeText()` unreliable in POS | Manual select-all and copy |
+| **Modal state** | Navigation state persists between modal opens | Internal state management with reset |
+| **Multi-select** | `allowMultiple` prop doesn't work | Use `multiple` prop instead |
+| **Modal dismissal** | `shopify.action.dismissModal()` unavailable in modal | Use `navigation.dismiss()` |
+| **Choice events** | `event.target.values` unreliable | Use `event.currentTarget.values` |
+
+### UI Components Used
+
+Built with Shopify Polaris web components:
+- `<s-page>` - Page container with heading
+- `<s-scroll-box>` - Scrollable content area
+- `<s-section>` - Content sections
+- `<s-choice-list>` - Radio buttons and checkboxes
+- `<s-choice>` - Individual selection options
+- `<s-text-area>` - Editable email list
+- `<s-button>` - Action buttons
+- `<s-banner>` - Error and warning messages
+- `<s-text>` - Text content
+- `<s-box>` - Layout container with padding
+- `<s-footer>` / `<s-footer-actions>` - Fixed footer with action buttons
+
+### State Management
+
+Uses Preact hooks with module-level state reset:
+- `useState` for: screen, screenData, segments, selectedSegment, customers, selectedCustomers, emailText
+- `useEffect` to fetch segments and customer data
+- `resetAppState()` function called on modal open to ensure fresh start
+
+### Key Functions
+
+- **`fetchSegments()`** - Fetches all customer segments via GraphQL
+- **`fetchSegmentMembers(segmentId)`** - Fetches customers in a segment
+- **`fetchCustomerOrdersAtLocation(customerId, locationId)`** - Counts orders per customer at location
+- **`filterByPrimaryStore(customers, locationId)`** - Filters to customers with orders at current location
+- **`extractNumericId(gid)`** - Parses numeric ID from Shopify GID for query filters
+- **`navigateTo(screen, data)`** - Internal navigation between screens
+- **`navigation.dismiss()`** - Closes the modal
+
+### Future Improvements
+
+If Shopify adds support for these features, the extension could be enhanced:
+- **Direct email sending** via a general-purpose customer email API
+- **Deep linking** to `mailto:` with BCC field pre-populated
+- **Clipboard access** for one-tap copy functionality
+
+---
+
 ## Access Scopes Required
 
 The app requires the following Shopify API scopes in `shopify.app.toml`:
@@ -489,11 +625,21 @@ pos-ui/
 │   │   │   └── Tile.jsx         # POS home tile
 │   │   ├── shopify.extension.toml  # Config (API version: 2025-10)
 │   │   └── package.json
-│   └── purchase-history-recommendations/
+│   ├── purchase-history-recommendations/
+│   │   ├── src/
+│   │   │   ├── Modal.jsx        # Recommendations display (React)
+│   │   │   └── Tile.jsx         # POS home tile with customer detection
+│   │   ├── shopify.extension.toml  # Config (API version: unstable)
+│   │   └── package.json
+│   └── customer-outreach/
 │       ├── src/
-│       │   ├── Modal.jsx        # Recommendations display (React)
-│       │   └── Tile.jsx         # POS home tile with customer detection
-│       ├── shopify.extension.toml  # Config (API version: unstable)
+│       │   ├── Modal.jsx        # Multi-screen outreach flow (Preact + Polaris)
+│       │   └── Tile.jsx         # POS home tile
+│       ├── locales/
+│       │   ├── en.default.json  # English translations
+│       │   └── fr.json          # French translations
+│       ├── shopify.extension.toml  # Config (API version: 2025-10)
+│       ├── README.md            # POC documentation with limitations
 │       └── package.json
 ├── prisma/
 │   └── schema.prisma            # Database schema
@@ -550,6 +696,28 @@ pos-ui/
    - Open modal to see previously purchased products
    - Tap Product A to see recommendations
    - Add recommended products to cart
+
+### Testing Customer Outreach
+
+1. **Create Customer Segment:**
+   - Go to Shopify Admin > Customers > Segments
+   - Create a new segment (e.g., "VIP Customers" or "Local Shoppers")
+   - Ensure segment contains customers with email addresses
+
+2. **Create Test Orders:**
+   - Create orders for test customers at your POS location
+   - Customers need at least one order at the location to appear in filtered results
+
+3. **Test in POS:**
+   - Open POS at the relevant location
+   - Click "Customer Outreach" tile
+   - Select a customer segment
+   - Verify customers with orders at this location appear
+   - Select customers and proceed to email list
+   - Test editing the email list
+   - Use device controls to select all and copy
+
+**Note:** This is a POC - emails must be manually copied and pasted into an external email client. See the extension's README for full documentation on limitations.
 
 ---
 
@@ -610,6 +778,35 @@ console.log('Matching Products:', matchingProducts.length);
 
 - ❌ Malformed JSON in `recommendations` metafield
   - **Fix:** Validate JSON format: `["gid://shopify/ProductVariant/123"]`
+
+#### Customer Outreach Extension
+
+**1. "No segments found"**
+
+- ❌ No customer segments exist in Shopify Admin
+  - **Fix:** Create segments via Admin > Customers > Segments
+
+**2. "No customers found with orders at this location"**
+
+- ❌ Segment customers haven't ordered at the current POS location
+  - **Fix:** Create test orders for customers at your location
+- ❌ Location ID not available from POS session
+  - **Fix:** Check console for `LocationId:` log - ensure POS is assigned to a location
+
+**3. Modal doesn't reset between opens**
+
+- ❌ This was a known issue - fixed by internal state management
+  - **Fix:** Ensure using latest code with `resetAppState()` in modal entry
+
+**4. Can't copy emails**
+
+- ❌ Clipboard API not available in POS sandbox
+  - **Workaround:** Use device native controls (long-press to select all, then copy)
+
+**5. Multi-select not working (radio buttons instead of checkboxes)**
+
+- ❌ Using wrong prop on `s-choice-list`
+  - **Fix:** Use `multiple` prop, not `allowMultiple` or `allow-multiple`
 
 ### Debugging Checklist
 
